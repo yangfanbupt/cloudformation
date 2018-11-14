@@ -1,0 +1,545 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Spoke VPC with all in one",
+
+    "Parameters" : {
+    "vEOSAMI": {
+        "Description" : "vEOS AMI ID in AWS Marketplace",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "vEOSHAProfile": {
+        "Description" : "vEOS Router use this IAM to make route table change in case of failure",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPAddr": {
+        "Description" : "CVP address to receive telemetry data",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPusername": {
+        "Description" : "CVP use this usernmae to provisioning vEOS",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPpassword": {
+        "Description" : "CVP use this password to provisioning vEOS",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "KeyName" : {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type" : "AWS::EC2::KeyPair::KeyName",
+      "Default" : ""
+    },
+    "SVpcCidr" : {
+      "Description" : "CIDR block for Spoke VPC.",
+      "Type" : "String",
+      "Default" : "10.1.0.0/16"
+    },
+    "SVpcDNS" : {
+      "Description" : "DNS server in VPC. Typically it's 2nd ip adddress of the VPC CIDR. For example, if VPC CIDR is 10.1.0.0/16. DNS ip will be 10.1.0.2",
+      "Type" : "String",
+      "Default" : "10.1.0.2"
+    },
+    "SPublicSn1" : {
+      "Description" : "Address range for Spoke VPC public subnet1 to be created in AZ1.",
+      "Type" : "String",
+      "Default" : "10.1.0.0/24"
+    },
+    "SPrivateSn1" : {
+      "Description" : "Address range for Spoke VPC private subnet1 to be created in AZ1.",
+      "Type" : "String",
+      "Default" : "10.1.1.0/24"
+    },
+    "SPublicSn2" : {
+      "Description" : "Address range for Spoke VPC public subnet2 to be created in AZ1.",
+      "Type" : "String",
+      "Default" : "10.1.2.0/24"
+    },
+    "SPrivateSn2" : {
+      "Description" : "Address range for Spoke VPC private subnet2 to be created in AZ1.",
+      "Type" : "String",
+      "Default" : "10.1.3.0/24"
+    },
+    "VEOSInstanceType" : {
+      "Description" : "Instance Type for vEOS Router Instance",
+      "Type" : "String",
+      "Default" : "t2.medium",
+      "AllowedValues" : [ "t2.medium","c4.large", "c4.xlarge", "c4.2xlarge" ]
+    },
+    "SPubPriSubnet1AZ" : {
+      "Description" : "Optional: Availability Zone number for public subnet 1 and private subnet 1.",
+      "Type" : "String",
+      "Default": "0",
+      "AllowedValues" : ["0", "1", "2", "3", "4", "5"]
+    },
+    "SPubPriSubnet2AZ" : {
+      "Description" : "Optional: Availability Zone number for public subnet 2 and private subnet 2.",
+      "Type" : "String",
+      "Default": "1",
+      "AllowedValues" : ["0", "1", "2", "3", "4", "5"]
+    },
+  },
+
+    "Resources": {
+        "SpokeVPC": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": { "Ref" : "SVpcCidr" },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-vpc"
+                    }
+                ]
+            }
+        },
+
+        "SpokeVPCSecGrp" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" : {
+                "GroupDescription" : "vEOS Instance Security Group Rules",
+                "VpcId" : { "Ref" : "SpokeVPC" },
+                "SecurityGroupIngress" : [
+                       { "IpProtocol" : "tcp", "FromPort" : "22",  "ToPort" : "22", "CidrIp" : "0.0.0.0/0"},
+                       { "IpProtocol" : "udp", "FromPort" : "500",  "ToPort" : "500", "CidrIp" : "0.0.0.0/0"},
+                       { "IpProtocol" : "udp", "FromPort" : "4500",  "ToPort" : "4500", "CidrIp" : "0.0.0.0/0"},
+                       { "IpProtocol" : "-1", "FromPort" : "0",  "ToPort" : "65535", "CidrIp" : { "Fn::Join" : ["", [{"Ref" : "vEOS1Eip" }, "/32"]]}},
+                       { "IpProtocol" : "-1", "FromPort" : "0",  "ToPort" : "65535", "CidrIp" : { "Fn::Join" : ["", [{"Ref" : "vEOS2Eip" }, "/32"]]}}
+                   ],
+                "SecurityGroupEgress" : [
+                    { "IpProtocol" : "-1", "FromPort" : "0", "ToPort" : "65535", "CidrIp" : "0.0.0.0/0" } 
+                ]
+            }
+        },
+        "SpokeIGW": {
+            "Type": "AWS::EC2::InternetGateway",
+            "Properties": {
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-igw"
+                    }
+                ]
+            }
+        },
+        "SpokeAttachGateway": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "InternetGatewayId": {
+                    "Ref": "SpokeIGW"
+                }
+            }
+        },
+        "SpokePublicSn1": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "CidrBlock": {"Ref": "SPublicSn1" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "SPubPriSubnet1AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-public-subnet1"
+                    }
+                ]
+            }
+        },
+        "SpokePublicSn2": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "CidrBlock": {"Ref": "SPublicSn2" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "SPubPriSubnet2AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-public-subnet2"
+                    }
+                ]
+            }
+        },
+        "SpokePrivateSn1": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "CidrBlock": {"Ref": "SPrivateSn1" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "SPubPriSubnet1AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-private-subnet1"
+                    }
+                ]
+            }
+        },
+        "SpokePrivateSn2": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "CidrBlock": {"Ref": "SPrivateSn2" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "SPubPriSubnet2AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-private-subnet2"
+                    }
+                ]
+            }
+        },
+        "SpokePublicRouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-public-routetable"
+                    }
+                ]
+            }
+        },
+        "SpokeInternetRoute": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": "SpokeAttachGateway",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "SpokePublicRouteTable"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "SpokeIGW"
+                }
+            }
+        },
+        "SpokePublicRouteTableAssociation1": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "SpokePublicSn1"
+                },
+                "RouteTableId": {
+                    "Ref": "SpokePublicRouteTable"
+                }
+            }
+        },
+        "SpokePublicRouteTableAssociation2": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "SpokePublicSn2"
+                },
+                "RouteTableId": {
+                    "Ref": "SpokePublicRouteTable"
+                }
+            }
+        },
+        "SpokePrivateRouteTable1": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-private-routetable1"
+                    }
+                ]
+            }
+        },
+        "OnPremRoute1": {
+            "Type": "AWS::EC2::Route",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "SpokePrivateRouteTable1"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "NetworkInterfaceId" : { "Ref" : "vEOS1PriInt" }
+            }
+        },
+        "SpokePrivateRouteTableAssociation1": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "SpokePrivateSn1"
+                },
+                "RouteTableId": {
+                    "Ref": "SpokePrivateRouteTable1"
+                }
+            }
+        },
+        "SpokePrivateRouteTable2": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "SpokeVPC"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-private-routetable2"
+                    }
+                ]
+            }
+        },
+        "OnPremRoute2": {
+            "Type": "AWS::EC2::Route",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "SpokePrivateRouteTable2"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "NetworkInterfaceId" : { "Ref" : "vEOS2PriInt" }
+            }
+        },
+        "SpokePrivateRouteTableAssociation2": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "SpokePrivateSn2"
+                },
+                "RouteTableId": {
+                    "Ref": "SpokePrivateRouteTable2"
+                }
+            }
+        },
+        "vEOS1Eip" : {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+            "Domain" : "vpc"
+          }
+        },
+        "vEOS2Eip" : {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+            "Domain" : "vpc"
+          }
+        },
+        "vEOS1Eip1Association":{
+           "Type": "AWS::EC2::EIPAssociation",
+           "Properties": {
+              "AllocationId": { "Fn::GetAtt" : [ "vEOS1Eip", "AllocationId" ] },
+              "InstanceId": { "Ref" : "SpokevRouter1Instance" }
+            }
+        },
+        "vEOS2Eip1Association":{
+           "Type": "AWS::EC2::EIPAssociation",
+           "Properties": {
+              "AllocationId": { "Fn::GetAtt" : [ "vEOS2Eip", "AllocationId" ] },
+              "InstanceId": { "Ref" : "SpokevRouter2Instance" }
+            }
+        },
+        "SpokevRouter1Instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {"Ref": "KeyName"},
+                "ImageId": {"Ref": "vEOSAMI"},
+                "InstanceType": {"Ref": "VEOSInstanceType"},
+                "SubnetId" : { "Ref" : "SpokePublicSn1" },
+                "SourceDestCheck": false,
+                "SecurityGroupIds" : [{ "Ref" : "SpokeVPCSecGrp" }],
+                "IamInstanceProfile": { "Ref" : "vEOSHAProfile" },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-vrouter-1"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "%EOS-STARTUP-CONFIG-START%\n",
+                                "hostname Spoke-vRouter1\n",
+                                "daemon TerminAttr\n",
+                                "exec /usr/bin/TerminAttr -ingestgrpcurl=",
+                                {"Ref":"CVPAddr"},
+                                ":9910 -taillogs -ingestauth=key,magickey -smashexcludes=ale,flexCounter,hardware,kni,pulse,strata -ingestexclude=/Sysdb/cell/1/agent,/Sysdb/cell/2/agent\n",
+                                "no shutdown\n",
+                                "interface loopback 0\n",
+                                "ip address ",
+                                {"Ref": "vEOS1Eip"},
+                                " 255.255.255.255\n",
+                                "username ",
+                                {"Ref": "CVPusername"},
+                                " secret ",
+                                {"Ref": "CVPpassword"},
+                                "\n",
+                                "management api http-commands\n",
+                                "no shutdown\n",
+                                "cloud provider aws\n",
+                                "region ",
+                                {"Ref": "AWS::Region"},
+                                "\n",
+                                "cloud high-availability\n",
+                                "no shutdown\n",
+                                "peer vEOS2\n",
+                                "aws\n",
+                                "primary-gateway ",
+                                {"Ref": "SpokePrivateRouteTable1"},
+                                " 0.0.0.0/0 local-cloud-interface ",
+                                {"Ref": "vEOS1PriInt"},
+                                "\n",
+                                "backup-gateway ",
+                                {"Ref": "SpokePrivateRouteTable2"},
+                                " 0.0.0.0/0 local-cloud-interface ",
+                                {"Ref": "vEOS1PriInt"},
+                                "\n",
+                                "bfd source-interface Ethernet1\n",
+                                "peer address ",
+                                { "Ref" : "vEOS2Eip" },
+                                "\n",
+                                "ip name-server vrf default ",
+                                { "Ref" : "SVpcDNS"},
+                                "\n",
+                                "%EOS-STARTUP-CONFIG-END%\n",
+
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+
+         "SpokevRouter2Instance": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {"Ref": "KeyName"},
+                "ImageId": {"Ref": "vEOSAMI"},
+                "InstanceType": {"Ref": "VEOSInstanceType"},
+                "SubnetId" : { "Ref" : "SpokePublicSn2" },
+                "SourceDestCheck": false,
+                "SecurityGroupIds" : [{ "Ref" : "SpokeVPCSecGrp" }],
+                "IamInstanceProfile": { "Ref" : "vEOSHAProfile" },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "spoke-vrouter-2"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "%EOS-STARTUP-CONFIG-START%\n",
+                                "hostname Spoke-vRouter2\n",
+                                "daemon TerminAttr\n",
+                                "exec /usr/bin/TerminAttr -ingestgrpcurl=",
+                                {"Ref":"CVPAddr"},
+                                ":9910 -taillogs -ingestauth=key,magickey -smashexcludes=ale,flexCounter,hardware,kni,pulse,strata -ingestexclude=/Sysdb/cell/1/agent,/Sysdb/cell/2/agent\n",
+                                "no shutdown\n",
+                                "interface loopback 0\n",
+                                "ip address ",
+                                {"Ref": "vEOS2Eip"},
+                                " 255.255.255.255\n",
+                                "username ",
+                                {"Ref": "CVPusername"},
+                                " secret ",
+                                {"Ref": "CVPpassword"},
+                                "\n",
+                                "management api http-commands\n",
+                                "no shutdown\n",
+                                "cloud provider aws\n",
+                                "region ",
+                                {"Ref": "AWS::Region"},
+                                "\n",
+                                "cloud high-availability\n",
+                                "no shutdown\n",
+                                "peer vEOS1\n",
+                                "aws\n",
+                                "primary-gateway ",
+                                {"Ref": "SpokePrivateRouteTable2"},
+                                " 0.0.0.0/0 local-cloud-interface ",
+                                {"Ref": "vEOS2PriInt"},
+                                "\n",
+                                "backup-gateway ",
+                                {"Ref": "SpokePrivateRouteTable1"},
+                                " 0.0.0.0/0 local-cloud-interface ",
+                                {"Ref": "vEOS2PriInt"},
+                                "\n",
+                                "bfd source-interface Ethernet1\n",
+                                "peer address ",
+                                { "Ref" : "vEOS1Eip" },
+                                "\n",
+                                "ip name-server vrf default ",
+                                { "Ref" : "SVpcDNS"},
+                                "\n",
+                                "%EOS-STARTUP-CONFIG-END%\n",
+
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+
+        "vEOS1PriInt": {
+          "Type": "AWS::EC2::NetworkInterface",
+          "Properties": {
+            "SourceDestCheck": false,
+            "GroupSet" : [{ "Ref" : "SpokeVPCSecGrp" }],
+            "SubnetId": {
+              "Ref": "SpokePrivateSn1"
+                }
+            }
+        },
+
+        "vEOS1PriIntAttachment": {
+           "Type" : "AWS::EC2::NetworkInterfaceAttachment",
+           "DependsOn" : "vEOS1Eip1Association",
+           "Properties" : {
+              "DeleteOnTermination": true,
+              "DeviceIndex": 1,
+              "InstanceId": {"Ref" : "SpokevRouter1Instance"},
+              "NetworkInterfaceId": {"Ref" : "vEOS1PriInt"}
+           }
+        },
+
+        "vEOS2PriInt": {
+          "Type": "AWS::EC2::NetworkInterface",
+          "Properties": {
+            "SourceDestCheck": false,
+            "GroupSet" : [{ "Ref" : "SpokeVPCSecGrp" }],
+            "SubnetId": {
+              "Ref": "SpokePrivateSn2"
+                }
+            }
+        },
+
+        "vEOS2PriIntAttachment": {
+           "Type" : "AWS::EC2::NetworkInterfaceAttachment",
+           "DependsOn" : "vEOS2Eip1Association",
+           "Properties" : {
+              "DeleteOnTermination": true,
+              "DeviceIndex": 1,
+              "InstanceId": {"Ref" : "SpokevRouter2Instance"},
+              "NetworkInterfaceId": {"Ref" : "vEOS2PriInt"}
+           }
+        }
+
+    },
+    "Outputs": {
+    }
+}

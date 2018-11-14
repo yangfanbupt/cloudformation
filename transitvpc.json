@@ -1,0 +1,321 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Transit VPC with all in one",
+
+    "Parameters" : {
+    "vEOSAMI": {
+        "Description" : "vEOS AMI ID in AWS Marketplace",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPAddr": {
+        "Description" : "CVP address to receive telemetry data",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPusername": {
+        "Description" : "CVP use this usernmae to provisioning vEOS",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "CVPpassword": {
+        "Description" : "CVP use this password to provisioning vEOS",
+      "Type" : "String",
+      "Default" : ""
+    },
+    "KeyName" : {
+      "Description" : "Name of an existing EC2 KeyPair to enable SSH access to the instances",
+      "Type" : "AWS::EC2::KeyPair::KeyName",
+      "Default" : ""
+    },
+    "TVpcCidr" : {
+      "Description" : "CIDR block for Transit VPC.",
+      "Type" : "String",
+      "Default" : "10.100.0.0/16"
+    },
+    "TPublicSn1" : {
+      "Description" : "Address range for Transit VPC subnet to be created in AZ1.",
+      "Type" : "String",
+      "Default" : "10.100.0.0/24"
+    },
+    "TPublicSn2" : {
+      "Description" : "Address range for Transit VPC subnet to be created in AZ2.",
+      "Type" : "String",
+      "Default" : "10.100.1.0/24"
+    },
+    "VEOSInstanceType" : {
+      "Description" : "Instance Type for vEOS Router Instance",
+      "Type" : "String",
+      "Default" : "t2.medium",
+      "AllowedValues" : [ "t2.medium","c4.large", "c4.xlarge", "c4.2xlarge" ]
+    },
+    "TPubSubnet1AZ" : {
+      "Description" : "Optional: Availability Zone number for Public Subnet1.",
+      "Type" : "String",
+      "Default": "0",
+      "AllowedValues" : ["0", "1", "2", "3", "4", "5"]
+    },
+    "TPubSubnet2AZ" : {
+      "Description" : "Optional: Availability Zone number for Public Subnet2.",
+      "Type" : "String",
+      "Default": "1",
+      "AllowedValues" : ["0", "1", "2", "3", "4", "5"]
+    }
+  },
+
+    "Resources": {
+        "TransitVPC": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": { "Ref" : "TVpcCidr" },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "transit-vpc"
+                    }
+                ]
+            }
+        },
+
+        "TransitVPCSecGrp" : {
+            "Type" : "AWS::EC2::SecurityGroup",
+            "Properties" : {
+                "GroupDescription" : "vEOS Instance Security Group Rules",
+                "VpcId" : { "Ref" : "TransitVPC" },
+                "SecurityGroupIngress" : [
+                       { "IpProtocol" : "tcp", "FromPort" : "22",  "ToPort" : "22", "CidrIp" : "0.0.0.0/0"},
+                       { "IpProtocol" : "udp", "FromPort" : "500",  "ToPort" : "500", "CidrIp" : "0.0.0.0/0"},
+                       { "IpProtocol" : "udp", "FromPort" : "4500",  "ToPort" : "4500", "CidrIp" : "0.0.0.0/0"}
+                   ],
+                "SecurityGroupEgress" : [
+                    { "IpProtocol" : "-1", "FromPort" : "0", "ToPort" : "65535", "CidrIp" : "0.0.0.0/0" } 
+                ]
+            }
+        },
+        "TransitIGW": {
+            "Type": "AWS::EC2::InternetGateway",
+            "Properties": {
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "transit-igw"
+                    }
+                ]
+            }
+        },
+        "TransitAttachGateway": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "TransitVPC"
+                },
+                "InternetGatewayId": {
+                    "Ref": "TransitIGW"
+                }
+            }
+        },
+        "TransitPublicSn1": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "TransitVPC"
+                },
+                "CidrBlock": {"Ref": "TPublicSn1" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "TPubSubnet1AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "transit-public-subnet1"
+                    }
+                ]
+            }
+        },
+        "TransitPublicSn2": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "TransitVPC"
+                },
+                "CidrBlock": {"Ref": "TPublicSn2" },
+                "AvailabilityZone" : { "Fn::Select": [{ "Ref": "TPubSubnet2AZ"}, {"Fn::GetAZs": ""}] },
+                "MapPublicIpOnLaunch": true,
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "transit-public-subnet2"
+                    }
+                ]
+            }
+        },
+        "TransitPublicRouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {
+                    "Ref": "TransitVPC"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "transit-public-routetable"
+                    }
+                ]
+            }
+        },
+        "TransitInternetRoute": {
+            "Type": "AWS::EC2::Route",
+            "DependsOn": "TransitAttachGateway",
+            "Properties": {
+                "RouteTableId": {
+                    "Ref": "TransitPublicRouteTable"
+                },
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {
+                    "Ref": "TransitIGW"
+                }
+            }
+        },
+        "TransitPublicRouteTableAssociation1": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "TransitPublicSn1"
+                },
+                "RouteTableId": {
+                    "Ref": "TransitPublicRouteTable"
+                }
+            }
+        },
+        "TransitPublicRouteTableAssociation2": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "SubnetId": {
+                    "Ref": "TransitPublicSn2"
+                },
+                "RouteTableId": {
+                    "Ref": "TransitPublicRouteTable"
+                }
+            }
+        },
+        "vEOS1Eip" : {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+            "Domain" : "vpc"
+          }
+        },
+        "vEOS1Eip1Association":{
+           "Type": "AWS::EC2::EIPAssociation",
+           "Properties": {
+              "AllocationId": { "Fn::GetAtt" : [ "vEOS1Eip", "AllocationId" ] },
+              "InstanceId": { "Ref" : "TransitvRouterInstance1" }
+            }
+        },
+        "vEOS2Eip" : {
+          "Type" : "AWS::EC2::EIP",
+          "Properties" : {
+            "Domain" : "vpc"
+          }
+        },
+        "vEOS2Eip1Association":{
+           "Type": "AWS::EC2::EIPAssociation",
+           "Properties": {
+              "AllocationId": { "Fn::GetAtt" : [ "vEOS2Eip", "AllocationId" ] },
+              "InstanceId": { "Ref" : "TransitvRouterInstance2" }
+            }
+        },
+        
+        "TransitvRouterInstance1": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {"Ref": "KeyName"},
+                "ImageId": {"Ref": "vEOSAMI"},
+                "InstanceType": {"Ref": "VEOSInstanceType"},
+                "SubnetId" : { "Ref" : "TransitPublicSn1" },
+                "SecurityGroupIds" : [{ "Ref" : "TransitVPCSecGrp" }],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Transit-vrouter-1"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "%EOS-STARTUP-CONFIG-START%\n",
+                                "hostname Transit-vRouter-1\n",
+                                "daemon TerminAttr\n",
+                                "exec /usr/bin/TerminAttr -ingestgrpcurl=",
+                                {"Ref":"CVPAddr"},
+                                ":9910 -taillogs -ingestauth=key,magickey -smashexcludes=ale,flexCounter,hardware,kni,pulse,strata -ingestexclude=/Sysdb/cell/1/agent,/Sysdb/cell/2/agent\n",
+                                "no shutdown\n",
+                                "interface loopback 0\n",
+                                "ip address ",
+                                {"Ref": "vEOS1Eip"},
+                                " 255.255.255.255\n",
+                                "username ",
+                                {"Ref": "CVPusername"},
+                                " secret ",
+                                {"Ref": "CVPpassword"},
+                                "\n",
+                                "management api http-commands\n",
+                                "no shutdown\n",
+                                "%EOS-STARTUP-CONFIG-END%\n",
+
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+
+        "TransitvRouterInstance2": {
+            "Type": "AWS::EC2::Instance",
+            "Properties": {
+                "KeyName": {"Ref": "KeyName"},
+                "ImageId": {"Ref": "vEOSAMI"},
+                "InstanceType": {"Ref": "VEOSInstanceType"},
+                "SubnetId" : { "Ref" : "TransitPublicSn2" },
+                "SecurityGroupIds" : [{ "Ref" : "TransitVPCSecGrp" }],
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "Transit-vrouter-2"
+                    }
+                ],
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "%EOS-STARTUP-CONFIG-START%\n",
+                                "hostname Transit-vRouter-2\n",
+                                "daemon TerminAttr\n",
+                                "exec /usr/bin/TerminAttr -ingestgrpcurl=",
+                                {"Ref":"CVPAddr"},
+                                ":9910 -taillogs -ingestauth=key,magickey -smashexcludes=ale,flexCounter,hardware,kni,pulse,strata -ingestexclude=/Sysdb/cell/1/agent,/Sysdb/cell/2/agent\n",
+                                "no shutdown\n",
+                                "interface loopback 0\n",
+                                "ip address ",
+                                {"Ref": "vEOS2Eip"},
+                                " 255.255.255.255\n",
+                                "username ",
+                                {"Ref": "CVPusername"},
+                                " secret ",
+                                {"Ref": "CVPpassword"},
+                                "\n",
+                                "management api http-commands\n",
+                                "no shutdown\n",
+                                "%EOS-STARTUP-CONFIG-END%\n",
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+    },
+    "Outputs": {
+    
+    }
+}
